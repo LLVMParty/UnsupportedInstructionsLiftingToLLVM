@@ -25,8 +25,6 @@ private:
 
   std::string getDisassemblyString(const ZydisDecodedInstruction &instruction) const;
 
-  bool isSupportedRegister(const ZydisRegister reg) const;
-
   size_t getContextIndex(const ZydisRegister reg) const;
 
   bool mIs64 = false;

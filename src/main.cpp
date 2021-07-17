@@ -106,18 +106,6 @@ size_t UILifter::getContextIndex(const ZydisRegister reg) const {
   }
 }
 
-bool UILifter::isSupportedRegister(const ZydisRegister reg) const {
-  switch (ZydisRegisterGetClass(reg)) {
-    case ZYDIS_REGCLASS_GPR8:
-    case ZYDIS_REGCLASS_GPR16:
-    case ZYDIS_REGCLASS_GPR32:
-    case ZYDIS_REGCLASS_GPR64:
-      return true;
-    default:
-      return false;
-  }
-}
-
 llvm::Function *UILifter::Lift(const std::vector<ZyanU8> &bytes) const {
 
   // Decode the instruction with Zydis
@@ -132,84 +120,153 @@ llvm::Function *UILifter::Lift(const std::vector<ZyanU8> &bytes) const {
 
   // Retrieve the implicitly|explicitly read|written registers
 
-  std::set<ZydisRegister> errw;
-  std::set<ZydisRegister> erw;
-  std::set<ZydisRegister> err;
-  std::set<ZydisRegister> irrw;
-  std::set<ZydisRegister> irw;
-  std::set<ZydisRegister> irr;
+  std::set<ZydisRegister> errw; // explicitly read+written GPRs
+  std::set<ZydisRegister> erw;  // explicitly written GPRs
+  std::set<ZydisRegister> err;  // explicitly read GPRs
+  std::set<ZydisRegister> irrw; // implicitly read+written GPRs
+  std::set<ZydisRegister> irw;  // implicitly written GPRs
+  std::set<ZydisRegister> irr;  // implicitly read GPRs
+  std::vector<std::string> icf; // implicitly clobbered flags
 
   for (ZyanU8 i = 0; i < instruction.operand_count; i++) {
     const auto &op = instruction.operands[i];
+
+    // TODO: add support to the "~{memory}" clobbering
+    // https://stackoverflow.com/questions/56432259/how-can-i-indicate-that-the-memory-pointed-to-by-an-inline-asm-argument-may-be
+    switch (op.visibility) {
+      case ZYDIS_OPERAND_VISIBILITY_HIDDEN:
+      case ZYDIS_OPERAND_VISIBILITY_IMPLICIT: {
+        switch (op.type) {
+          case ZYDIS_OPERAND_TYPE_MEMORY:
+          case ZYDIS_OPERAND_TYPE_POINTER: {
+            llvm::report_fatal_error("[!] Unhandled implicit or hidden access to memory!");
+          } break;
+          default: break;
+        }
+      } break;
+      default: break;
+    }
+
     switch (op.type) {
       case ZYDIS_OPERAND_TYPE_REGISTER: {
-        if (isSupportedRegister(op.reg.value)) {
-          switch (op.visibility) {
-            case ZYDIS_OPERAND_VISIBILITY_EXPLICIT: {
-              switch (op.actions) {
-                case ZYDIS_OPERAND_ACTION_READ:
-                case ZYDIS_OPERAND_ACTION_CONDREAD: {
-                  err.insert(op.reg.value);
+        switch (ZydisRegisterGetClass(op.reg.value)) {
+          case ZYDIS_REGCLASS_GPR8:
+          case ZYDIS_REGCLASS_GPR16:
+          case ZYDIS_REGCLASS_GPR32:
+          case ZYDIS_REGCLASS_GPR64: {
+            switch (op.visibility) {
+              case ZYDIS_OPERAND_VISIBILITY_EXPLICIT: {
+                switch (op.actions) {
+                  case ZYDIS_OPERAND_ACTION_READ:
+                  case ZYDIS_OPERAND_ACTION_CONDREAD: {
+                    err.insert(op.reg.value);
+                  } break;
+                  case ZYDIS_OPERAND_ACTION_WRITE:
+                  case ZYDIS_OPERAND_ACTION_CONDWRITE: {
+                    erw.insert(op.reg.value);
+                  } break;
+                  case ZYDIS_OPERAND_ACTION_READWRITE:
+                  case ZYDIS_OPERAND_ACTION_CONDREAD_CONDWRITE:
+                  case ZYDIS_OPERAND_ACTION_READ_CONDWRITE:
+                  case ZYDIS_OPERAND_ACTION_CONDREAD_WRITE: {
+                    errw.insert(op.reg.value);
+                  } break;
+                }
+              } break;
+              case ZYDIS_OPERAND_VISIBILITY_HIDDEN:
+              case ZYDIS_OPERAND_VISIBILITY_IMPLICIT: {
+                switch (op.actions) {
+                  case ZYDIS_OPERAND_ACTION_READ:
+                  case ZYDIS_OPERAND_ACTION_CONDREAD: {
+                    irr.insert(op.reg.value);
+                  } break;
+                  case ZYDIS_OPERAND_ACTION_WRITE:
+                  case ZYDIS_OPERAND_ACTION_CONDWRITE: {
+                    irw.insert(op.reg.value);
+                  } break;
+                  case ZYDIS_OPERAND_ACTION_READWRITE:
+                  case ZYDIS_OPERAND_ACTION_CONDREAD_CONDWRITE:
+                  case ZYDIS_OPERAND_ACTION_READ_CONDWRITE:
+                  case ZYDIS_OPERAND_ACTION_CONDREAD_WRITE: {
+                    irrw.insert(op.reg.value);
+                  } break;
+                }
+              } break;
+              default: break;
+            }
+          } break;
+          case ZYDIS_REGCLASS_FLAGS: {
+            if (op.actions & ZYDIS_OPERAND_ACTION_MASK_WRITE)
+              switch (op.reg.value) {
+                case ZYDIS_REGISTER_FLAGS:
+                case ZYDIS_REGISTER_EFLAGS:
+                case ZYDIS_REGISTER_RFLAGS: {
+                  icf.push_back("~{flags}");
                 } break;
-                case ZYDIS_OPERAND_ACTION_WRITE:
-                case ZYDIS_OPERAND_ACTION_CONDWRITE: {
-                  erw.insert(op.reg.value);
-                } break;
-                case ZYDIS_OPERAND_ACTION_READWRITE:
-                case ZYDIS_OPERAND_ACTION_CONDREAD_CONDWRITE:
-                case ZYDIS_OPERAND_ACTION_READ_CONDWRITE:
-                case ZYDIS_OPERAND_ACTION_CONDREAD_WRITE: {
-                  errw.insert(op.reg.value);
-                } break;
+                default: break;
               }
-            } break;
-            case ZYDIS_OPERAND_VISIBILITY_HIDDEN:
-            case ZYDIS_OPERAND_VISIBILITY_IMPLICIT: {
-              switch (op.actions) {
-                case ZYDIS_OPERAND_ACTION_READ:
-                case ZYDIS_OPERAND_ACTION_CONDREAD: {
-                  irr.insert(op.reg.value);
-                } break;
-                case ZYDIS_OPERAND_ACTION_WRITE:
-                case ZYDIS_OPERAND_ACTION_CONDWRITE: {
-                  irw.insert(op.reg.value);
-                } break;
-                case ZYDIS_OPERAND_ACTION_READWRITE:
-                case ZYDIS_OPERAND_ACTION_CONDREAD_CONDWRITE:
-                case ZYDIS_OPERAND_ACTION_READ_CONDWRITE:
-                case ZYDIS_OPERAND_ACTION_CONDREAD_WRITE: {
-                  irrw.insert(op.reg.value);
-                } break;
-              }
-            } break;
-            default: break;
-          }
+          } break;
+          default: {
+            if (op.actions & ZYDIS_OPERAND_ACTION_MASK_WRITE)
+              if (op.reg.value == ZYDIS_REGISTER_X87STATUS)
+                icf.push_back("~{fpsr}");
+          } break;
         }
       } break;
       case ZYDIS_OPERAND_TYPE_MEMORY: {
-        if (isSupportedRegister(op.mem.base)) {
-          switch (op.visibility) {
-            case ZYDIS_OPERAND_VISIBILITY_EXPLICIT: {
-              err.insert(op.mem.base);
-            } break;
-            case ZYDIS_OPERAND_VISIBILITY_HIDDEN:
-            case ZYDIS_OPERAND_VISIBILITY_IMPLICIT: {
-              irr.insert(op.mem.base);
-            } break;
-            default: break;
-          }
+        switch (ZydisRegisterGetClass(op.mem.base)) {
+          case ZYDIS_REGCLASS_GPR8:
+          case ZYDIS_REGCLASS_GPR16:
+          case ZYDIS_REGCLASS_GPR32:
+          case ZYDIS_REGCLASS_GPR64: {
+            switch (op.visibility) {
+              case ZYDIS_OPERAND_VISIBILITY_EXPLICIT: {
+                err.insert(op.mem.base);
+              } break;
+              case ZYDIS_OPERAND_VISIBILITY_HIDDEN:
+              case ZYDIS_OPERAND_VISIBILITY_IMPLICIT: {
+                irr.insert(op.mem.base);
+              } break;
+              default: break;
+            }
+          } break;
+          default: break;
         }
-        if (isSupportedRegister(op.mem.index)) {
-          switch (op.visibility) {
-            case ZYDIS_OPERAND_VISIBILITY_EXPLICIT: {
-              err.insert(op.mem.index);
-            } break;
-            case ZYDIS_OPERAND_VISIBILITY_HIDDEN:
-            case ZYDIS_OPERAND_VISIBILITY_IMPLICIT: {
-              irr.insert(op.mem.index);
-            } break;
-            default: break;
-          }
+        switch (ZydisRegisterGetClass(op.mem.index)) {
+          case ZYDIS_REGCLASS_GPR8:
+          case ZYDIS_REGCLASS_GPR16:
+          case ZYDIS_REGCLASS_GPR32:
+          case ZYDIS_REGCLASS_GPR64: {
+            switch (op.visibility) {
+              case ZYDIS_OPERAND_VISIBILITY_EXPLICIT: {
+                err.insert(op.mem.index);
+              } break;
+              case ZYDIS_OPERAND_VISIBILITY_HIDDEN:
+              case ZYDIS_OPERAND_VISIBILITY_IMPLICIT: {
+                irr.insert(op.mem.index);
+              } break;
+              default: break;
+            }
+          } break;
+          default: break;
+        }
+      } break;
+      default: break;
+    }
+  }
+
+  for (ZydisCPUFlag i = 0; (ZyanUSize)i < ZYAN_ARRAY_LENGTH(instruction.accessed_flags); i++) {
+    switch (i) {
+      case ZYDIS_CPUFLAG_DF: {
+        switch (instruction.accessed_flags[i].action) {
+          case ZYDIS_CPUFLAG_ACTION_TESTED_MODIFIED:
+          case ZYDIS_CPUFLAG_ACTION_MODIFIED:
+          case ZYDIS_CPUFLAG_ACTION_SET_0:
+          case ZYDIS_CPUFLAG_ACTION_SET_1:
+          case ZYDIS_CPUFLAG_ACTION_UNDEFINED: {
+            icf.push_back("~{dirflag}");
+          } break;
+          default: break;
         }
       } break;
       default: break;
@@ -237,6 +294,7 @@ llvm::Function *UILifter::Lift(const std::vector<ZyanU8> &bytes) const {
   // Generate the format string for the operands
 
   std::vector<ZydisRegister> ExplicitArguments;
+  std::vector<ZydisRegister> ClobberedRegisters;
   std::vector<ZydisRegister> OutputRegisters;
   std::vector<ZydisRegister> InputRegisters;
   std::string ArgumentsFormat;
@@ -292,7 +350,11 @@ llvm::Function *UILifter::Lift(const std::vector<ZyanU8> &bytes) const {
     ArgumentsFormat += (std::to_string(i) + ",");
   }
 
-  ArgumentsFormat.pop_back();
+  for (const auto &cf : icf)
+    ArgumentsFormat += (cf + ",");
+
+  if (!ArgumentsFormat.empty())
+    ArgumentsFormat.pop_back();
 
   // Generate the format string for the assembly
 
@@ -386,7 +448,8 @@ llvm::Function *UILifter::Lift(const std::vector<ZyanU8> &bytes) const {
 
   // Generate the function and the entry block
 
-  auto *InlineAsmFunction = llvm::Function::Create(mFunctionTy, llvm::Function::ExternalLinkage, "Unsupported", mModule);
+  const std::string FunctionName = "Unsupported_" + std::string(ZydisMnemonicGetString(instruction.mnemonic));
+  auto *InlineAsmFunction = llvm::Function::Create(mFunctionTy, llvm::Function::ExternalLinkage, FunctionName, mModule);
   auto *InlineAsmBlock = llvm::BasicBlock::Create(mContext, "", InlineAsmFunction);
   InlineAsmFunction->addFnAttr(llvm::Attribute::AlwaysInline);
 
@@ -458,7 +521,9 @@ int main() {
 
   const auto &UIL = UILifter::Get(Module);
 
+  UIL.Lift({ 0xFD });
   UIL.Lift({ 0xD9, 0xFA });
+  UIL.Lift({ 0xD9, 0xFB });
   UIL.Lift({ 0xDD, 0x18 });
   UIL.Lift({ 0x01, 0xD8 });
   UIL.Lift({ 0x0F, 0xA2 });
