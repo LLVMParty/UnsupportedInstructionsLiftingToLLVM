@@ -14,7 +14,7 @@ public:
     return instance;
   }
 
-  llvm::Function *Lift(const std::vector<ZyanU8> &bytes) const;
+  llvm::Function *Lift(const std::vector<ZyanU8> &bytes, size_t address = 0) const;
 
   UILifter(UILifter const &)       = delete;
   void operator=(UILifter const &) = delete;
@@ -23,9 +23,11 @@ private:
 
   UILifter(llvm::Module &Module, bool Is64, bool IsDebug);
 
-  std::string getDisassemblyString(const ZydisDecodedInstruction &instruction) const;
+  std::string getDisassemblyString(const ZydisDecodedInstruction &instruction, size_t address = 0) const;
 
-  size_t getContextIndex(const ZydisRegister reg) const;
+  size_t getRegisterOffset(const ZydisRegister reg) const;
+
+  size_t getRegisterIndex(const ZydisRegister reg) const;
 
   bool mIs64 = false;
   bool mDebug = false;
@@ -37,6 +39,9 @@ private:
   llvm::Module &mModule;
   llvm::LLVMContext &mContext;
   llvm::Type *mInputTy = nullptr;
+  llvm::Type *mRegByteTy = nullptr;
+  llvm::Type *mRegWordTy = nullptr;
+  llvm::Type *mRegFullTy = nullptr;
   llvm::FunctionType *mFunctionTy = nullptr;
 
 };
